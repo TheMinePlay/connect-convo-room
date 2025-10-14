@@ -34,7 +34,9 @@ export const VideoCall = ({ roomId }: VideoCallProps) => {
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<Array<{ user: string; text: string; time: string }>>([]);
   const localVideoRef = useRef<HTMLVideoElement>(null);
+  const screenVideoRef = useRef<HTMLVideoElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
+  const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
 
   useEffect(() => {
     startLocalStream();
@@ -74,6 +76,9 @@ export const VideoCall = ({ roomId }: VideoCallProps) => {
     if (stream) {
       stream.getTracks().forEach(track => track.stop());
     }
+    if (screenStream) {
+      screenStream.getTracks().forEach(track => track.stop());
+    }
   };
 
   const toggleMute = () => {
@@ -97,21 +102,38 @@ export const VideoCall = ({ roomId }: VideoCallProps) => {
   const toggleScreenShare = async () => {
     try {
       if (!isScreenSharing) {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        const newScreenStream = await navigator.mediaDevices.getDisplayMedia({
           video: true,
         });
         
+        setScreenStream(newScreenStream);
         setIsScreenSharing(true);
+        
+        if (screenVideoRef.current) {
+          screenVideoRef.current.srcObject = newScreenStream;
+        }
+        
         toast({
           title: "Демонстрация экрана",
           description: "Вы начали демонстрацию экрана",
         });
 
-        screenStream.getVideoTracks()[0].onended = () => {
+        newScreenStream.getVideoTracks()[0].onended = () => {
           setIsScreenSharing(false);
+          setScreenStream(null);
+          if (screenVideoRef.current) {
+            screenVideoRef.current.srcObject = null;
+          }
         };
       } else {
+        if (screenStream) {
+          screenStream.getTracks().forEach(track => track.stop());
+        }
+        setScreenStream(null);
         setIsScreenSharing(false);
+        if (screenVideoRef.current) {
+          screenVideoRef.current.srcObject = null;
+        }
       }
     } catch (error) {
       console.error("Error sharing screen:", error);
@@ -151,6 +173,21 @@ export const VideoCall = ({ roomId }: VideoCallProps) => {
       {/* Main video grid */}
       <div className="h-full p-4 pb-24">
         <div className="grid grid-cols-2 md:grid-cols-3 gap-4 h-full">
+          {/* Screen share (full width when active) */}
+          {isScreenSharing && screenStream && (
+            <div className="relative glass-effect rounded-2xl overflow-hidden col-span-2 md:col-span-3">
+              <video
+                ref={screenVideoRef}
+                autoPlay
+                playsInline
+                className="w-full h-full object-contain bg-black"
+              />
+              <div className="absolute bottom-4 left-4 px-3 py-1 bg-black/50 rounded-lg text-sm font-medium">
+                Демонстрация экрана
+              </div>
+            </div>
+          )}
+          
           {/* Local video */}
           <div className="relative glass-effect rounded-2xl overflow-hidden group">
             <video
