@@ -16,16 +16,20 @@ import {
   X
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { useToast } from "@/hooks/use-toast";
+import { toast } from "sonner";
 import { DeviceSettings } from "./DeviceSettings";
+import { ParticipantApproval } from "./ParticipantApproval";
+import { supabase } from "@/integrations/supabase/client";
+import { User } from "@supabase/supabase-js";
 
 interface VideoCallProps {
   roomId: string;
+  user: User | null;
+  room: any;
 }
 
-export const VideoCall = ({ roomId }: VideoCallProps) => {
+export const VideoCall = ({ roomId, user, room }: VideoCallProps) => {
   const navigate = useNavigate();
-  const { toast } = useToast();
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
@@ -33,17 +37,65 @@ export const VideoCall = ({ roomId }: VideoCallProps) => {
   const [showSettings, setShowSettings] = useState(false);
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<Array<{ user: string; text: string; time: string }>>([]);
+  const [participantStatus, setParticipantStatus] = useState<string>('approved');
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const screenVideoRef = useRef<HTMLVideoElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
 
+  const isHost = user?.id === room?.host_user_id;
+
   useEffect(() => {
-    startLocalStream();
+    if (user) {
+      checkParticipantStatus();
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (participantStatus === 'approved') {
+      startLocalStream();
+    }
     return () => {
       stopAllStreams();
     };
-  }, []);
+  }, [participantStatus]);
+
+  const checkParticipantStatus = async () => {
+    if (!user) return;
+
+    const channel = supabase
+      .channel(`room:${roomId}:participant:${user.id}`)
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'room_participants',
+        filter: `user_id=eq.${user.id}`,
+      }, (payload) => {
+        setParticipantStatus(payload.new.status);
+        if (payload.new.status === 'rejected') {
+          toast.error("Доступ отклонен");
+          navigate("/");
+        } else if (payload.new.status === 'approved') {
+          toast.success("Вы допущены к конференции");
+        }
+      })
+      .subscribe();
+
+    const { data } = await supabase
+      .from('room_participants')
+      .select('status')
+      .eq('room_id', roomId)
+      .eq('user_id', user.id)
+      .single();
+
+    if (data) {
+      setParticipantStatus(data.status);
+    }
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  };
 
   const startLocalStream = async () => {
     try {
@@ -58,17 +110,10 @@ export const VideoCall = ({ roomId }: VideoCallProps) => {
         localVideoRef.current.srcObject = mediaStream;
       }
 
-      toast({
-        title: "Подключено",
-        description: "Камера и микрофон активированы",
-      });
+      toast.success("Камера и микрофон активированы");
     } catch (error) {
       console.error("Error accessing media devices:", error);
-      toast({
-        title: "Ошибка",
-        description: "Не удалось получить доступ к камере или микрофону",
-        variant: "destructive",
-      });
+      toast.error("Не удалось получить доступ к камере или микрофону");
     }
   };
 
@@ -113,10 +158,7 @@ export const VideoCall = ({ roomId }: VideoCallProps) => {
           screenVideoRef.current.srcObject = newScreenStream;
         }
         
-        toast({
-          title: "Демонстрация экрана",
-          description: "Вы начали демонстрацию экрана",
-        });
+        toast.success("Вы начали демонстрацию экрана");
 
         newScreenStream.getVideoTracks()[0].onended = () => {
           setIsScreenSharing(false);
@@ -137,11 +179,7 @@ export const VideoCall = ({ roomId }: VideoCallProps) => {
       }
     } catch (error) {
       console.error("Error sharing screen:", error);
-      toast({
-        title: "Ошибка",
-        description: "Не удалось начать демонстрацию экрана",
-        variant: "destructive",
-      });
+      toast.error("Не удалось начать демонстрацию экрана");
     }
   };
 
@@ -162,14 +200,26 @@ export const VideoCall = ({ roomId }: VideoCallProps) => {
   const leaveCall = () => {
     stopAllStreams();
     navigate("/");
-    toast({
-      title: "Звонок завершён",
-      description: "Вы покинули конференцию",
-    });
+    toast.success("Вы покинули конференцию");
   };
+
+  if (participantStatus === 'pending') {
+    return (
+      <div className="h-screen bg-background flex items-center justify-center">
+        <div className="glass-effect p-8 rounded-2xl text-center">
+          <h2 className="text-2xl font-bold mb-2">Ожидание одобрения</h2>
+          <p className="text-muted-foreground">
+            Организатор комнаты должен одобрить ваш запрос на присоединение
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative h-screen bg-background overflow-hidden">
+      <ParticipantApproval roomId={roomId} isHost={isHost} />
+      
       {/* Main video grid */}
       <div className="h-full p-4 pb-24">
         <div className="grid grid-cols-2 md:grid-cols-3 gap-4 h-full">

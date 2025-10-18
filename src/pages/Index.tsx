@@ -1,30 +1,52 @@
+import { useEffect, useState } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { RoomCard } from "@/components/RoomCard";
 import { Button } from "@/components/ui/button";
 import { Plus, Video } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
+import { User } from "@supabase/supabase-js";
 
 const Index = () => {
   const navigate = useNavigate();
+  const [user, setUser] = useState<User | null>(null);
+  const [rooms, setRooms] = useState<any[]>([]);
 
-  // Mock data for demo
-  const rooms = [
-    {
-      id: "1",
-      name: "Встреча команды",
-      participants: 5,
-      maxParticipants: 10,
-      createdAt: new Date().toISOString(),
-      isActive: true,
-    },
-    {
-      id: "2",
-      name: "Презентация проекта",
-      participants: 12,
-      createdAt: new Date(Date.now() - 3600000).toISOString(),
-      isActive: true,
-    },
-  ];
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (user) {
+      loadRooms();
+      const channel = supabase
+        .channel('rooms-changes')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms' }, loadRooms)
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }
+  }, [user]);
+
+  const loadRooms = async () => {
+    const { data } = await supabase
+      .from('rooms')
+      .select('*, profiles(display_name)')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false });
+    
+    if (data) setRooms(data);
+  };
 
   return (
     <div className="min-h-screen p-5">
@@ -38,14 +60,24 @@ const Index = () => {
           <p className="text-xl text-muted-foreground max-w-2xl mx-auto mb-6">
             Создавайте комнаты, приглашайте участников и общайтесь с командой в реальном времени
           </p>
-          <Button
-            onClick={() => navigate("/create")}
-            size="lg"
-            className="bg-primary hover:bg-primary/90 text-white gap-2 px-8 py-6 text-lg rounded-xl shadow-accent hover:shadow-lg transition-all duration-300"
-          >
-            <Plus className="w-5 h-5" />
-            Создать комнату
-          </Button>
+          {!user ? (
+            <Button
+              onClick={() => navigate("/auth")}
+              size="lg"
+              className="bg-primary hover:bg-primary/90 text-white gap-2 px-8 py-6 text-lg rounded-xl shadow-accent hover:shadow-lg transition-all duration-300"
+            >
+              Войти / Регистрация
+            </Button>
+          ) : (
+            <Button
+              onClick={() => navigate("/create")}
+              size="lg"
+              className="bg-primary hover:bg-primary/90 text-white gap-2 px-8 py-6 text-lg rounded-xl shadow-accent hover:shadow-lg transition-all duration-300"
+            >
+              <Plus className="w-5 h-5" />
+              Создать комнату
+            </Button>
+          )}
         </header>
 
         <section className="glass-effect rounded-2xl p-8 mb-8">
@@ -105,17 +137,29 @@ const Index = () => {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {rooms.map((room) => (
-              <RoomCard key={room.id} {...room} />
+              <RoomCard 
+                key={room.id}
+                id={room.id}
+                name={room.name}
+                participants={0}
+                maxParticipants={room.max_participants}
+                createdAt={room.created_at}
+                isActive={room.is_active}
+              />
             ))}
           </div>
 
           {rooms.length === 0 && (
             <div className="glass-effect rounded-2xl p-12 text-center">
-              <p className="text-muted-foreground mb-4">Нет активных комнат</p>
-              <Button onClick={() => navigate("/create")} className="bg-primary hover:bg-primary/90 text-white">
-                <Plus className="w-4 h-4 mr-2" />
-                Создать первую комнату
-              </Button>
+              <p className="text-muted-foreground mb-4">
+                {user ? "Нет активных комнат" : "Войдите, чтобы увидеть активные комнаты"}
+              </p>
+              {user && (
+                <Button onClick={() => navigate("/create")} className="bg-primary hover:bg-primary/90 text-white">
+                  <Plus className="w-4 h-4 mr-2" />
+                  Создать первую комнату
+                </Button>
+              )}
             </div>
           )}
         </section>

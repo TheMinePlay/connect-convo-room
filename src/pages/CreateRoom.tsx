@@ -3,38 +3,80 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Video, Lock, Users } from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
+import { User } from "@supabase/supabase-js";
+import { toast } from "sonner";
 
 const CreateRoom = () => {
   const navigate = useNavigate();
-  const { toast } = useToast();
+  const [user, setUser] = useState<User | null>(null);
   const [roomName, setRoomName] = useState("");
   const [requireApproval, setRequireApproval] = useState(true);
   const [maxParticipants, setMaxParticipants] = useState("50");
+  const [loading, setLoading] = useState(false);
 
-  const handleCreateRoom = () => {
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      if (!session) {
+        navigate("/auth");
+      }
+    });
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      if (!session) {
+        navigate("/auth");
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [navigate]);
+
+  const handleCreateRoom = async () => {
     if (!roomName.trim()) {
-      toast({
-        title: "Ошибка",
-        description: "Введите название комнаты",
-        variant: "destructive",
-      });
+      toast.error("Введите название комнаты");
       return;
     }
 
-    // Generate room ID
-    const roomId = Math.random().toString(36).substring(7);
-    
-    toast({
-      title: "Комната создана!",
-      description: `Комната "${roomName}" успешно создана`,
-    });
+    if (!user) {
+      toast.error("Необходимо войти в систему");
+      navigate("/auth");
+      return;
+    }
 
-    // Navigate to room
-    navigate(`/room/${roomId}`);
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('rooms')
+        .insert({
+          name: roomName,
+          host_user_id: user.id,
+          max_participants: parseInt(maxParticipants),
+          require_approval: requireApproval,
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      // Add host as approved participant
+      await supabase.from('room_participants').insert({
+        room_id: data.id,
+        user_id: user.id,
+        status: 'approved',
+      });
+
+      toast.success("Комната создана!");
+      navigate(`/room/${data.id}`);
+    } catch (error: any) {
+      toast.error(error.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -136,9 +178,10 @@ const CreateRoom = () => {
             <Button
               onClick={handleCreateRoom}
               size="lg"
+              disabled={loading}
               className="flex-1 bg-primary hover:bg-primary/90 text-white h-12 text-base rounded-xl"
             >
-              Создать и войти
+              {loading ? "Создание..." : "Создать и войти"}
             </Button>
             <Button
               onClick={() => navigate("/")}

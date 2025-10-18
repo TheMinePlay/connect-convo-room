@@ -14,7 +14,127 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      profiles: {
+        Row: {
+          avatar_url: string | null
+          created_at: string | null
+          display_name: string | null
+          id: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string | null
+          display_name?: string | null
+          id: string
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string | null
+          display_name?: string | null
+          id?: string
+        }
+        Relationships: []
+      }
+      room_participants: {
+        Row: {
+          id: string
+          joined_at: string | null
+          room_id: string
+          status: string
+          user_id: string
+        }
+        Insert: {
+          id?: string
+          joined_at?: string | null
+          room_id: string
+          status: string
+          user_id: string
+        }
+        Update: {
+          id?: string
+          joined_at?: string | null
+          room_id?: string
+          status?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "room_participants_room_id_fkey"
+            columns: ["room_id"]
+            isOneToOne: false
+            referencedRelation: "rooms"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      rooms: {
+        Row: {
+          created_at: string | null
+          host_user_id: string
+          id: string
+          is_active: boolean | null
+          max_participants: number | null
+          name: string
+          require_approval: boolean | null
+        }
+        Insert: {
+          created_at?: string | null
+          host_user_id: string
+          id?: string
+          is_active?: boolean | null
+          max_participants?: number | null
+          name: string
+          require_approval?: boolean | null
+        }
+        Update: {
+          created_at?: string | null
+          host_user_id?: string
+          id?: string
+          is_active?: boolean | null
+          max_participants?: number | null
+          name?: string
+          require_approval?: boolean | null
+        }
+        Relationships: []
+      }
+      webrtc_signals: {
+        Row: {
+          created_at: string | null
+          from_user_id: string
+          id: string
+          room_id: string
+          signal_data: Json
+          signal_type: string
+          to_user_id: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          from_user_id: string
+          id?: string
+          room_id: string
+          signal_data: Json
+          signal_type: string
+          to_user_id?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          from_user_id?: string
+          id?: string
+          room_id?: string
+          signal_data?: Json
+          signal_type?: string
+          to_user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "webrtc_signals_room_id_fkey"
+            columns: ["room_id"]
+            isOneToOne: false
+            referencedRelation: "rooms"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never

@@ -7,6 +7,7 @@ import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 import CreateRoom from "./pages/CreateRoom";
 import VideoRoom from "./pages/VideoRoom";
+import Auth from "./pages/Auth";
 
 const queryClient = new QueryClient();
 
@@ -18,6 +19,7 @@ const App = () => (
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Index />} />
+          <Route path="/auth" element={<Auth />} />
           <Route path="/create" element={<CreateRoom />} />
           <Route path="/room/:roomId" element={<VideoRoom />} />
           <Route path="/rooms" element={<Index />} />
