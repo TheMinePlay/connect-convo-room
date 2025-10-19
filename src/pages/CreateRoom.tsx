@@ -63,13 +63,7 @@ const CreateRoom = () => {
 
       if (error) throw error;
 
-      // Add host as approved participant
-      await supabase.from('room_participants').insert({
-        room_id: data.id,
-        user_id: user.id,
-        status: 'approved',
-      });
-
+      // Host is automatically added as participant via database trigger
       toast.success("Комната создана!");
       navigate(`/room/${data.id}`);
     } catch (error: any) {
