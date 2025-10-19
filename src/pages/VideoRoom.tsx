@@ -55,16 +55,18 @@ const VideoRoom = () => {
         .select('*')
         .eq('room_id', roomId)
         .eq('user_id', user.id)
-        .single();
+        .maybeSingle();
 
       if (!participantData) {
-        // Request to join
+        // Use upsert to avoid duplicate key errors
         const { error: joinError } = await supabase
           .from('room_participants')
-          .insert({
+          .upsert({
             room_id: roomId,
             user_id: user.id,
             status: roomData.require_approval ? 'pending' : 'approved',
+          }, {
+            onConflict: 'room_id,user_id'
           });
 
         if (joinError) throw joinError;
