@@ -21,6 +21,7 @@ import { DeviceSettings } from "./DeviceSettings";
 import { ParticipantApproval } from "./ParticipantApproval";
 import { supabase } from "@/integrations/supabase/client";
 import { User } from "@supabase/supabase-js";
+import { useWebRTC } from "@/hooks/useWebRTC";
 
 interface VideoCallProps {
   roomId: string;
@@ -44,6 +45,12 @@ export const VideoCall = ({ roomId, user, room }: VideoCallProps) => {
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
 
   const isHost = user?.id === room?.host_user_id;
+
+  const { remoteParticipants, cleanup } = useWebRTC({
+    roomId,
+    user,
+    localStream: stream,
+  });
 
   useEffect(() => {
     if (user) {
@@ -124,6 +131,7 @@ export const VideoCall = ({ roomId, user, room }: VideoCallProps) => {
     if (screenStream) {
       screenStream.getTracks().forEach(track => track.stop());
     }
+    cleanup();
   };
 
   const toggleMute = () => {
@@ -259,9 +267,17 @@ export const VideoCall = ({ roomId, user, room }: VideoCallProps) => {
             </div>
           </div>
 
-          {/* Placeholder for other participants */}
-          {[1, 2, 3, 4, 5].map((i) => (
-            <div key={i} className="relative glass-effect rounded-2xl overflow-hidden">
+          {/* Remote participants */}
+          {Array.from(remoteParticipants.values()).map((participant) => (
+            <RemoteVideo
+              key={participant.userId}
+              participant={participant}
+            />
+          ))}
+
+          {/* Placeholder slots for empty spaces */}
+          {Array.from({ length: Math.max(0, 5 - remoteParticipants.size) }).map((_, i) => (
+            <div key={`empty-${i}`} className="relative glass-effect rounded-2xl overflow-hidden">
               <div className="w-full h-full bg-secondary flex items-center justify-center">
                 <div className="w-20 h-20 rounded-full bg-primary/20 flex items-center justify-center">
                   <Users className="w-10 h-10 text-primary" />
@@ -393,6 +409,38 @@ export const VideoCall = ({ roomId, user, room }: VideoCallProps) => {
       {showSettings && (
         <DeviceSettings onClose={() => setShowSettings(false)} />
       )}
+    </div>
+  );
+};
+
+interface RemoteVideoProps {
+  participant: {
+    userId: string;
+    stream: MediaStream;
+    displayName: string;
+  };
+}
+
+const RemoteVideo = ({ participant }: RemoteVideoProps) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (videoRef.current && participant.stream) {
+      videoRef.current.srcObject = participant.stream;
+    }
+  }, [participant.stream]);
+
+  return (
+    <div className="relative glass-effect rounded-2xl overflow-hidden">
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        className="w-full h-full object-cover"
+      />
+      <div className="absolute bottom-4 left-4 px-3 py-1 bg-black/50 rounded-lg text-sm font-medium">
+        {participant.displayName}
+      </div>
     </div>
   );
 };
