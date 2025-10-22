@@ -1,27 +1,29 @@
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
+import { useNavigate } from "react-router-dom";
+import { User } from "@supabase/supabase-js";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
+import {
+  Mic,
+  MicOff,
+  Video,
+  VideoOff,
+  Monitor,
+  MonitorOff,
+  PhoneOff,
+  MessageSquare,
+  Settings,
+  X,
+  Send,
+  Users,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { 
-  Mic, 
-  MicOff, 
-  Video as VideoIcon, 
-  VideoOff, 
-  Monitor, 
-  MonitorOff,
-  MessageSquare,
-  Settings as SettingsIcon,
-  PhoneOff,
-  Users,
-  Send,
-  X
-} from "lucide-react";
-import { useNavigate } from "react-router-dom";
-import { toast } from "sonner";
+import { Card } from "@/components/ui/card";
+import { Track, RemoteParticipant as LKRemoteParticipant } from "livekit-client";
+import { useLiveKit } from "@/hooks/useLiveKit";
 import { DeviceSettings } from "./DeviceSettings";
 import { ParticipantApproval } from "./ParticipantApproval";
-import { supabase } from "@/integrations/supabase/client";
-import { User } from "@supabase/supabase-js";
-import { useWebRTC } from "@/hooks/useWebRTC";
 
 interface VideoCallProps {
   roomId: string;
@@ -29,197 +31,190 @@ interface VideoCallProps {
   room: any;
 }
 
+interface Message {
+  id: string;
+  sender: string;
+  text: string;
+  timestamp: Date;
+}
+
 export const VideoCall = ({ roomId, user, room }: VideoCallProps) => {
   const navigate = useNavigate();
+  const [participantStatus, setParticipantStatus] = useState<string>('pending');
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [message, setMessage] = useState("");
-  const [messages, setMessages] = useState<Array<{ user: string; text: string; time: string }>>([]);
-  const [participantStatus, setParticipantStatus] = useState<string>('approved');
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [messageInput, setMessageInput] = useState("");
   const localVideoRef = useRef<HTMLVideoElement>(null);
-  const screenVideoRef = useRef<HTMLVideoElement>(null);
-  const [stream, setStream] = useState<MediaStream | null>(null);
-  const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
 
   const isHost = user?.id === room?.host_user_id;
 
-  const { remoteParticipants, cleanup } = useWebRTC({
-    roomId,
-    user,
-    localStream: stream,
-  });
+  const {
+    room: liveKitRoom,
+    isConnecting,
+    isConnected,
+    participants,
+    localParticipant,
+    connectToRoom,
+    disconnectFromRoom,
+  } = useLiveKit({ roomId, user });
 
+  // Check participant status
   useEffect(() => {
-    if (user) {
-      checkParticipantStatus();
-    }
-  }, [user]);
+    if (!user || !roomId) return;
 
-  useEffect(() => {
-    if (participantStatus === 'approved') {
-      startLocalStream();
-    }
-    return () => {
-      stopAllStreams();
+    const checkStatus = async () => {
+      const { data } = await supabase
+        .from('room_participants')
+        .select('status')
+        .eq('room_id', roomId)
+        .eq('user_id', user.id)
+        .single();
+
+      if (data) {
+        setParticipantStatus(data.status);
+      }
     };
-  }, [participantStatus]);
 
-  const checkParticipantStatus = async () => {
-    if (!user) return;
+    checkStatus();
 
     const channel = supabase
-      .channel(`room:${roomId}:participant:${user.id}`)
-      .on('postgres_changes', {
-        event: 'UPDATE',
-        schema: 'public',
-        table: 'room_participants',
-        filter: `user_id=eq.${user.id}`,
-      }, (payload) => {
-        setParticipantStatus(payload.new.status);
-        if (payload.new.status === 'rejected') {
-          toast.error("Доступ отклонен");
-          navigate("/");
-        } else if (payload.new.status === 'approved') {
-          toast.success("Вы допущены к конференции");
+      .channel(`participant-${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'room_participants',
+          filter: `user_id=eq.${user.id}`,
+        },
+        (payload: any) => {
+          setParticipantStatus(payload.new.status);
+          if (payload.new.status === 'rejected') {
+            toast.error('Доступ отклонен');
+            navigate('/');
+          } else if (payload.new.status === 'approved') {
+            toast.success('Вы допущены к конференции');
+          }
         }
-      })
+      )
       .subscribe();
-
-    const { data } = await supabase
-      .from('room_participants')
-      .select('status')
-      .eq('room_id', roomId)
-      .eq('user_id', user.id)
-      .single();
-
-    if (data) {
-      setParticipantStatus(data.status);
-    }
 
     return () => {
       supabase.removeChannel(channel);
     };
-  };
+  }, [user, roomId, navigate]);
 
-  const startLocalStream = async () => {
-    try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true,
-      });
-      
-      setStream(mediaStream);
-      
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = mediaStream;
+  // Connect to LiveKit room when approved
+  useEffect(() => {
+    if (participantStatus === 'approved' && !isConnected && !isConnecting) {
+      connectToRoom();
+    }
+  }, [participantStatus, isConnected, isConnecting, connectToRoom]);
+
+  // Attach local video track
+  useEffect(() => {
+    if (!localParticipant || !localVideoRef.current) return;
+
+    const videoTrack = localParticipant.getTrackPublication(Track.Source.Camera);
+    if (videoTrack?.track) {
+      videoTrack.track.attach(localVideoRef.current);
+    }
+
+    return () => {
+      if (videoTrack?.track) {
+        videoTrack.track.detach();
       }
+    };
+  }, [localParticipant]);
 
-      toast.success("Камера и микрофон активированы");
-    } catch (error) {
-      console.error("Error accessing media devices:", error);
-      toast.error("Не удалось получить доступ к камере или микрофону");
+  // Update mute/video state based on local participant
+  useEffect(() => {
+    if (localParticipant) {
+      setIsMuted(!localParticipant.isMicrophoneEnabled);
+      setIsVideoOff(!localParticipant.isCameraEnabled);
     }
+  }, [localParticipant]);
+
+  // Toggle microphone
+  const toggleMute = async () => {
+    if (!localParticipant) return;
+    
+    const enabled = localParticipant.isMicrophoneEnabled;
+    await localParticipant.setMicrophoneEnabled(!enabled);
+    setIsMuted(!enabled);
   };
 
-  const stopAllStreams = () => {
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-    }
-    if (screenStream) {
-      screenStream.getTracks().forEach(track => track.stop());
-    }
-    cleanup();
+  // Toggle camera
+  const toggleVideo = async () => {
+    if (!localParticipant) return;
+    
+    const enabled = localParticipant.isCameraEnabled;
+    await localParticipant.setCameraEnabled(!enabled);
+    setIsVideoOff(!enabled);
   };
 
-  const toggleMute = () => {
-    if (stream) {
-      stream.getAudioTracks().forEach(track => {
-        track.enabled = !track.enabled;
-      });
-      setIsMuted(!isMuted);
-    }
-  };
-
-  const toggleVideo = () => {
-    if (stream) {
-      stream.getVideoTracks().forEach(track => {
-        track.enabled = !track.enabled;
-      });
-      setIsVideoOff(!isVideoOff);
-    }
-  };
-
+  // Toggle screen share
   const toggleScreenShare = async () => {
-    try {
-      if (!isScreenSharing) {
-        const newScreenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-        });
-        
-        setScreenStream(newScreenStream);
-        setIsScreenSharing(true);
-        
-        if (screenVideoRef.current) {
-          screenVideoRef.current.srcObject = newScreenStream;
-        }
-        
-        toast.success("Вы начали демонстрацию экрана");
+    if (!localParticipant) return;
 
-        newScreenStream.getVideoTracks()[0].onended = () => {
-          setIsScreenSharing(false);
-          setScreenStream(null);
-          if (screenVideoRef.current) {
-            screenVideoRef.current.srcObject = null;
-          }
-        };
-      } else {
-        if (screenStream) {
-          screenStream.getTracks().forEach(track => track.stop());
-        }
-        setScreenStream(null);
+    try {
+      if (isScreenSharing) {
+        await localParticipant.setScreenShareEnabled(false);
         setIsScreenSharing(false);
-        if (screenVideoRef.current) {
-          screenVideoRef.current.srcObject = null;
-        }
+      } else {
+        await localParticipant.setScreenShareEnabled(true);
+        setIsScreenSharing(true);
+        toast.success('Начата демонстрация экрана');
       }
     } catch (error) {
-      console.error("Error sharing screen:", error);
-      toast.error("Не удалось начать демонстрацию экрана");
+      console.error('Error toggling screen share:', error);
+      toast.error('Ошибка при попытке поделиться экраном');
     }
   };
 
   const sendMessage = () => {
-    if (message.trim()) {
-      setMessages([
-        ...messages,
-        {
-          user: "Вы",
-          text: message,
-          time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
-        },
-      ]);
-      setMessage("");
-    }
+    if (!messageInput.trim() || !user) return;
+
+    const newMessage: Message = {
+      id: Date.now().toString(),
+      sender: user.email || 'Вы',
+      text: messageInput,
+      timestamp: new Date(),
+    };
+
+    setMessages([...messages, newMessage]);
+    setMessageInput("");
   };
 
   const leaveCall = () => {
-    stopAllStreams();
-    navigate("/");
-    toast.success("Вы покинули конференцию");
+    disconnectFromRoom();
+    navigate('/');
+    toast.success('Вы покинули конференцию');
   };
 
   if (participantStatus === 'pending') {
     return (
-      <div className="h-screen bg-background flex items-center justify-center">
-        <div className="glass-effect p-8 rounded-2xl text-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Card className="p-8">
           <h2 className="text-2xl font-bold mb-2">Ожидание одобрения</h2>
           <p className="text-muted-foreground">
             Организатор комнаты должен одобрить ваш запрос на присоединение
           </p>
-        </div>
+        </Card>
+      </div>
+    );
+  }
+
+  if (participantStatus === 'rejected') {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Card className="p-8">
+          <p className="text-lg text-destructive">Доступ отклонен</p>
+        </Card>
       </div>
     );
   }
@@ -228,26 +223,22 @@ export const VideoCall = ({ roomId, user, room }: VideoCallProps) => {
     <div className="relative h-screen bg-background overflow-hidden">
       <ParticipantApproval roomId={roomId} isHost={isHost} />
       
-      {/* Main video grid */}
-      <div className="h-full p-4 pb-24">
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4 h-full">
-          {/* Screen share (full width when active) */}
-          {isScreenSharing && screenStream && (
-            <div className="relative glass-effect rounded-2xl overflow-hidden col-span-2 md:col-span-3">
-              <video
-                ref={screenVideoRef}
-                autoPlay
-                playsInline
-                className="w-full h-full object-contain bg-black"
-              />
-              <div className="absolute bottom-4 left-4 px-3 py-1 bg-black/50 rounded-lg text-sm font-medium">
-                Демонстрация экрана
-              </div>
-            </div>
-          )}
-          
+      {/* Header */}
+      <div className="p-4 border-b">
+        <h1 className="text-xl font-semibold">{room?.name || 'Видео комната'}</h1>
+        {isConnecting && (
+          <p className="text-sm text-muted-foreground">Подключение...</p>
+        )}
+        {isConnected && (
+          <p className="text-sm text-green-500">Подключено ({participants.length + 1} участников)</p>
+        )}
+      </div>
+
+      {/* Main video area */}
+      <div className="h-[calc(100vh-180px)] p-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 h-full">
           {/* Local video */}
-          <div className="relative glass-effect rounded-2xl overflow-hidden group">
+          <Card className="relative aspect-video bg-muted overflow-hidden">
             <video
               ref={localVideoRef}
               autoPlay
@@ -255,132 +246,101 @@ export const VideoCall = ({ roomId, user, room }: VideoCallProps) => {
               muted
               className="w-full h-full object-cover"
             />
+            <div className="absolute bottom-2 left-2 bg-background/80 px-2 py-1 rounded text-sm">
+              Вы {isMuted && "(без звука)"}
+            </div>
             {isVideoOff && (
-              <div className="absolute inset-0 bg-secondary flex items-center justify-center">
+              <div className="absolute inset-0 flex items-center justify-center bg-muted">
                 <div className="w-20 h-20 rounded-full bg-primary flex items-center justify-center">
                   <span className="text-2xl font-bold">Вы</span>
                 </div>
               </div>
             )}
-            <div className="absolute bottom-4 left-4 px-3 py-1 bg-black/50 rounded-lg text-sm font-medium">
-              Вы {isMuted && "(без звука)"}
-            </div>
-          </div>
+          </Card>
 
           {/* Remote participants */}
-          {Array.from(remoteParticipants.values()).map((participant) => (
-            <RemoteVideo
-              key={participant.userId}
-              participant={participant}
-            />
+          {participants.map((participant) => (
+            <RemoteParticipantView key={participant.identity} participant={participant} />
           ))}
 
-          {/* Placeholder slots for empty spaces */}
-          {Array.from({ length: Math.max(0, 5 - remoteParticipants.size) }).map((_, i) => (
-            <div key={`empty-${i}`} className="relative glass-effect rounded-2xl overflow-hidden">
-              <div className="w-full h-full bg-secondary flex items-center justify-center">
-                <div className="w-20 h-20 rounded-full bg-primary/20 flex items-center justify-center">
-                  <Users className="w-10 h-10 text-primary" />
-                </div>
+          {/* Empty slots */}
+          {Array.from({ length: Math.max(0, 5 - participants.length) }).map((_, i) => (
+            <Card key={`empty-${i}`} className="aspect-video bg-muted flex items-center justify-center">
+              <div className="text-center">
+                <Users className="w-12 h-12 text-muted-foreground mx-auto mb-2" />
+                <p className="text-muted-foreground text-sm">Ожидание участника...</p>
               </div>
-              <div className="absolute bottom-4 left-4 px-3 py-1 bg-black/50 rounded-lg text-sm font-medium">
-                Ожидание участника...
-              </div>
-            </div>
+            </Card>
           ))}
         </div>
       </div>
 
-      {/* Controls bar */}
-      <div className="absolute bottom-0 left-0 right-0 p-6 glass-effect border-t border-white/10">
-        <div className="max-w-4xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">Комната: {roomId}</span>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <Button
-              onClick={toggleMute}
-              size="lg"
-              variant={isMuted ? "destructive" : "secondary"}
-              className="w-14 h-14 rounded-full"
-            >
-              {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
-            </Button>
-
-            <Button
-              onClick={toggleVideo}
-              size="lg"
-              variant={isVideoOff ? "destructive" : "secondary"}
-              className="w-14 h-14 rounded-full"
-            >
-              {isVideoOff ? <VideoOff className="w-5 h-5" /> : <VideoIcon className="w-5 h-5" />}
-            </Button>
-
-            <Button
-              onClick={toggleScreenShare}
-              size="lg"
-              variant={isScreenSharing ? "default" : "secondary"}
-              className="w-14 h-14 rounded-full"
-            >
-              {isScreenSharing ? <MonitorOff className="w-5 h-5" /> : <Monitor className="w-5 h-5" />}
-            </Button>
-
-            <Button
-              onClick={() => setShowChat(!showChat)}
-              size="lg"
-              variant="secondary"
-              className="w-14 h-14 rounded-full"
-            >
-              <MessageSquare className="w-5 h-5" />
-            </Button>
-
-            <Button
-              onClick={() => setShowSettings(!showSettings)}
-              size="lg"
-              variant="secondary"
-              className="w-14 h-14 rounded-full"
-            >
-              <SettingsIcon className="w-5 h-5" />
-            </Button>
-
-            <Button
-              onClick={leaveCall}
-              size="lg"
-              variant="destructive"
-              className="w-14 h-14 rounded-full ml-4"
-            >
-              <PhoneOff className="w-5 h-5" />
-            </Button>
-          </div>
-
-          <div className="w-24" />
-        </div>
+      {/* Controls */}
+      <div className="absolute bottom-0 left-0 right-0 p-4 border-t flex justify-center gap-2 bg-background">
+        <Button
+          variant={isMuted ? "destructive" : "secondary"}
+          size="icon"
+          onClick={toggleMute}
+          disabled={!isConnected}
+        >
+          {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+        </Button>
+        <Button
+          variant={isVideoOff ? "destructive" : "secondary"}
+          size="icon"
+          onClick={toggleVideo}
+          disabled={!isConnected}
+        >
+          {isVideoOff ? <VideoOff className="w-5 h-5" /> : <Video className="w-5 h-5" />}
+        </Button>
+        <Button
+          variant={isScreenSharing ? "default" : "secondary"}
+          size="icon"
+          onClick={toggleScreenShare}
+          disabled={!isConnected}
+        >
+          {isScreenSharing ? <MonitorOff className="w-5 h-5" /> : <Monitor className="w-5 h-5" />}
+        </Button>
+        <Button
+          variant="secondary"
+          size="icon"
+          onClick={() => setShowChat(!showChat)}
+        >
+          <MessageSquare className="w-5 h-5" />
+        </Button>
+        <Button
+          variant="secondary"
+          size="icon"
+          onClick={() => setShowSettings(!showSettings)}
+        >
+          <Settings className="w-5 h-5" />
+        </Button>
+        <Button
+          variant="destructive"
+          size="icon"
+          onClick={leaveCall}
+        >
+          <PhoneOff className="w-5 h-5" />
+        </Button>
       </div>
 
       {/* Chat sidebar */}
       {showChat && (
-        <div className="fixed right-0 top-0 h-full w-96 glass-effect border-l border-white/10 p-6 flex flex-col animate-slide-in z-50">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-xl font-bold">Чат</h3>
-            <Button
-              onClick={() => setShowChat(false)}
-              variant="ghost"
-              size="sm"
-              className="w-8 h-8 p-0 rounded-full"
-            >
-              <X className="w-4 h-4" />
+        <div className="fixed right-0 top-0 h-full w-80 bg-background border-l shadow-lg flex flex-col z-50">
+          <div className="p-4 border-b flex justify-between items-center">
+            <h2 className="font-semibold">Чат</h2>
+            <Button variant="ghost" size="icon" onClick={() => setShowChat(false)}>
+              <X className="w-5 h-5" />
             </Button>
           </div>
-
-          <div className="flex-1 overflow-y-auto space-y-3 mb-4">
-            {messages.map((msg, i) => (
-              <div key={i} className="glass-effect rounded-lg p-3">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-semibold text-sm">{msg.user}</span>
-                  <span className="text-xs text-muted-foreground">{msg.time}</span>
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {messages.map((msg) => (
+              <div key={msg.id} className="space-y-1">
+                <div className="text-sm font-medium">{msg.sender}</div>
+                <div className="text-sm bg-muted p-2 rounded">{msg.text}</div>
+                <div className="text-xs text-muted-foreground">
+                  {msg.timestamp.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
                 </div>
-                <p className="text-sm">{msg.text}</p>
               </div>
             ))}
             {messages.length === 0 && (
@@ -389,58 +349,77 @@ export const VideoCall = ({ roomId, user, room }: VideoCallProps) => {
               </p>
             )}
           </div>
-
-          <div className="flex gap-2">
+          <div className="p-4 border-t flex gap-2">
             <Input
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              onKeyPress={(e) => e.key === "Enter" && sendMessage()}
+              value={messageInput}
+              onChange={(e) => setMessageInput(e.target.value)}
               placeholder="Введите сообщение..."
-              className="glass-effect"
+              onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
             />
-            <Button onClick={sendMessage} className="bg-primary hover:bg-primary/90">
-              <Send className="w-4 h-4" />
+            <Button size="icon" onClick={sendMessage}>
+              <Send className="w-5 h-5" />
             </Button>
           </div>
         </div>
       )}
 
-      {/* Settings sidebar */}
+      {/* Settings panel */}
       {showSettings && (
-        <DeviceSettings onClose={() => setShowSettings(false)} />
+        <div className="fixed inset-0 bg-background/80 flex items-center justify-center z-50">
+          <Card className="w-full max-w-md p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-semibold">Настройки</h2>
+              <Button variant="ghost" size="icon" onClick={() => setShowSettings(false)}>
+                <X className="w-5 h-5" />
+              </Button>
+            </div>
+            <DeviceSettings onClose={() => setShowSettings(false)} />
+          </Card>
+        </div>
       )}
     </div>
   );
 };
 
-interface RemoteVideoProps {
-  participant: {
-    userId: string;
-    stream: MediaStream;
-    displayName: string;
-  };
-}
-
-const RemoteVideo = ({ participant }: RemoteVideoProps) => {
+// Remote participant component
+const RemoteParticipantView = ({ participant }: { participant: LKRemoteParticipant }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [hasVideo, setHasVideo] = useState(false);
 
   useEffect(() => {
-    if (videoRef.current && participant.stream) {
-      videoRef.current.srcObject = participant.stream;
+    if (!participant || !videoRef.current) return;
+
+    const videoTrack = participant.getTrackPublication(Track.Source.Camera);
+    if (videoTrack?.track) {
+      videoTrack.track.attach(videoRef.current);
+      setHasVideo(true);
     }
-  }, [participant.stream]);
+
+    return () => {
+      if (videoTrack?.track) {
+        videoTrack.track.detach();
+      }
+    };
+  }, [participant]);
 
   return (
-    <div className="relative glass-effect rounded-2xl overflow-hidden">
+    <Card className="relative aspect-video bg-muted overflow-hidden">
       <video
         ref={videoRef}
         autoPlay
         playsInline
         className="w-full h-full object-cover"
       />
-      <div className="absolute bottom-4 left-4 px-3 py-1 bg-black/50 rounded-lg text-sm font-medium">
-        {participant.displayName}
+      <div className="absolute bottom-2 left-2 bg-background/80 px-2 py-1 rounded text-sm">
+        {participant.name || participant.identity}
       </div>
-    </div>
+      {!hasVideo && (
+        <div className="absolute inset-0 flex items-center justify-center bg-muted">
+          <div className="w-20 h-20 rounded-full bg-primary flex items-center justify-center">
+            <VideoOff className="w-12 h-12" />
+          </div>
+        </div>
+      )}
+    </Card>
   );
 };
